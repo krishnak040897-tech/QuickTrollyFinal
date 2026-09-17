@@ -1,8 +1,12 @@
 Flask==3.0.0
+Flask-Login==0.6.3
+pymongo==4.6.1
+python-dotenv==1.0.0
+werkzeug==3.0.1
 gunicorn==21.2.0
-psycopg2-binary==2.9.9
-cloudinary==1.39.1
+psycopg2-binary==2.9.10
+cloudinary==1.41.0
 python-barcode==0.14.0
-Pillow==10.2.0
-Werkzeug==3.0.1
+Pillow==10.4.0
 razorpay==1.4.2
+requests==2.31.0
