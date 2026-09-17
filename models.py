@@ -42,13 +42,19 @@ if not PILLOW_AVAILABLE and not SVGWRITER_AVAILABLE:
         SVGWRITER_AVAILABLE = False
 
 # --- Cloudinary Initialization ---
+CLOUDINARY_CONFIGURED = False
 if Config.CLOUDINARY_CLOUD_NAME and Config.CLOUDINARY_API_KEY and Config.CLOUDINARY_API_SECRET:
-    cloudinary.config(
-        cloud_name=Config.CLOUDINARY_CLOUD_NAME,
-        api_key=Config.CLOUDINARY_API_KEY,
-        api_secret=Config.CLOUDINARY_API_SECRET,
-        secure=True
-    )
+    try:
+        cloudinary.config(
+            cloud_name=Config.CLOUDINARY_CLOUD_NAME,
+            api_key=Config.CLOUDINARY_API_KEY,
+            api_secret=Config.CLOUDINARY_API_SECRET,
+            secure=True
+        )
+        CLOUDINARY_CONFIGURED = True
+    except Exception as e:
+        print(f"⚠️  Cloudinary config failed: {e}")
+
 
 class Database:
     def __init__(self):
@@ -124,9 +130,13 @@ class Database:
             print("❌ Barcode library not available. Install: pip install python-barcode Pillow")
             return None, None
 
+        if not CLOUDINARY_CONFIGURED:
+            print("⚠️  Cloudinary not configured. Barcode image will be skipped.")
+            return None, None
+
         local_filepath = None
         extension = '.png'
-        
+
         try:
             if PILLOW_AVAILABLE:
                 code128 = Code128(barcode_number, writer=ImageWriter())
@@ -220,7 +230,8 @@ class Database:
     def add_item_to_cart(self, user_id, product):
         cart = self.get_user_cart(user_id)
         p_id = str(product.get('_id') or product.get('id'))
-        existing = next((item for item in cart if (str(item.get('_id')) == p_id or str(item.get('id')) == p_id)), None)
+        existing = next((item for item in cart
+                         if (str(item.get('_id')) == p_id or str(item.get('id')) == p_id)), None)
 
         if existing:
             existing['qty'] = existing.get('qty', 0) + 1
@@ -236,7 +247,8 @@ class Database:
     def remove_item_from_cart(self, user_id, product_id):
         cart = self.get_user_cart(user_id)
         p_str = str(product_id)
-        item_index = next((i for i, item in enumerate(cart) if (str(item.get('_id')) == p_str or str(item.get('id')) == p_str)), None)
+        item_index = next((i for i, item in enumerate(cart)
+                          if (str(item.get('_id')) == p_str or str(item.get('id')) == p_str)), None)
 
         if item_index is not None:
             if cart[item_index].get('qty', 1) > 1:
@@ -291,16 +303,19 @@ class Database:
         barcode_number = self._generate_unique_barcode()
         self.cursor.execute('''
             INSERT INTO qt_products (name, original_price, price, qr_code, image, barcode_number, barcode_image, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (name, float(original_price), float(price), qr_code, image_url, barcode_number, None, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+        ''', (name, float(original_price), float(price), qr_code, image_url, barcode_number, None,
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
         product_id = self.cursor.fetchone()['id']
-        
+
         # Generate and upload barcode
         barcode_image, barcode_public_id = self._upload_barcode_to_cloudinary(barcode_number, product_id)
 
-        self.cursor.execute('UPDATE qt_products SET barcode_image = %s, barcode_public_id = %s WHERE id = %s', 
-                            (barcode_image, barcode_public_id, product_id))
+        self.cursor.execute(
+            'UPDATE qt_products SET barcode_image = %s, barcode_public_id = %s WHERE id = %s',
+            (barcode_image, barcode_public_id, product_id)
+        )
         return str(product_id)
 
     def update_product(self, product_id, name, original_price, price, qr_code, image_url):
@@ -314,7 +329,10 @@ class Database:
         if not barcode_number:
             barcode_number = self._generate_unique_barcode()
             barcode_image, barcode_public_id = self._upload_barcode_to_cloudinary(barcode_number, product_id)
-            self.cursor.execute('UPDATE qt_products SET barcode_public_id = %s WHERE id = %s', (barcode_public_id, product_id))
+            self.cursor.execute(
+                'UPDATE qt_products SET barcode_public_id = %s WHERE id = %s',
+                (barcode_public_id, product_id)
+            )
 
         self.cursor.execute('''
             UPDATE qt_products
@@ -328,7 +346,7 @@ class Database:
         product = self.get_product_by_id(product_id)
         if product:
             # Delete barcode from Cloudinary
-            if product.get('barcode_public_id'):
+            if product.get('barcode_public_id') and CLOUDINARY_CONFIGURED:
                 try:
                     cloudinary.uploader.destroy(product['barcode_public_id'])
                 except Exception as e:
@@ -343,7 +361,7 @@ class Database:
             return None
 
         # Delete old barcode from Cloudinary
-        if product.get('barcode_public_id'):
+        if product.get('barcode_public_id') and CLOUDINARY_CONFIGURED:
             try:
                 cloudinary.uploader.destroy(product['barcode_public_id'])
             except Exception as e:
@@ -367,7 +385,7 @@ class Database:
             INSERT INTO qt_orders (customer_name, phone, address, email, payment_id, products, total, date, status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
         ''', (customer_name, phone, address, email, payment_id, products_json, total, order_date, "Pending"))
-        
+
         order_id = self.cursor.fetchone()['id']
         return str(order_id)
 
@@ -444,4 +462,6 @@ class Database:
             if not self.cursor.fetchone():
                 return barcode_num
 
+
+# Initialize database singleton
 db = Database()
