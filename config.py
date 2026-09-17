@@ -7,7 +7,7 @@ class Config:
     RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID') or 'rzp_test_dhYJFlohg88eyl'
     RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET') or 'YOUR_SECRET_KEY_HERE'
 
-    # Cloudinary Configuration
+    # Cloudinary Configuration (optional — barcode works without it via data URI fallback)
     CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME')
     CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY')
     CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET')
