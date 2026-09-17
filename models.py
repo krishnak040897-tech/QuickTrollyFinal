@@ -53,8 +53,11 @@ if Config.CLOUDINARY_CLOUD_NAME and Config.CLOUDINARY_API_KEY and Config.CLOUDIN
             secure=True
         )
         CLOUDINARY_CONFIGURED = True
+        print("✅ Cloudinary successfully configured.")
     except Exception as e:
         print(f"⚠️  Cloudinary config failed (barcodes will use data URI fallback): {e}")
+else:
+    print("⚠️  Cloudinary credentials missing. Barcodes will use base64 data URI fallback.")
 
 
 class Database:
@@ -167,6 +170,10 @@ class Database:
             with open(local_filepath, 'rb') as f:
                 file_data = f.read()
 
+            if not file_data:
+                print("❌ Barcode file is empty")
+                return None, None
+
             # --- Attempt Cloudinary upload (optional) ---
             if CLOUDINARY_CONFIGURED:
                 try:
@@ -181,8 +188,10 @@ class Database:
                     if secure_url:
                         print(f"✅ Barcode uploaded to Cloudinary: {secure_url}")
                         return secure_url, public_id
+                    else:
+                        print("⚠️ Cloudinary upload returned no URL. Falling back to Data URI.")
                 except Exception as e:
-                    print(f"⚠️  Cloudinary upload failed, using data URI fallback: {e}")
+                    print(f"⚠️ Cloudinary upload failed, using data URI fallback: {e}")
 
             # --- Fallback: base64 data URI (always works, no external dependency) ---
             b64_data = base64.b64encode(file_data).decode('utf-8')
@@ -332,6 +341,10 @@ class Database:
         # Generate barcode image (Cloudinary URL or data URI fallback)
         barcode_image, barcode_public_id = self._generate_barcode_image(barcode_number, product_id)
 
+        # If generation fails completely, fallback to a generic placeholder URL
+        if not barcode_image:
+            barcode_image = 'https://placehold.co/300x100/f2f2f2/999999?text=Barcode+Error'
+
         self.cursor.execute(
             'UPDATE qt_products SET barcode_image = %s, barcode_public_id = %s WHERE id = %s',
             (barcode_image, barcode_public_id, product_id)
@@ -349,6 +362,8 @@ class Database:
         if not barcode_number:
             barcode_number = self._generate_unique_barcode()
             barcode_image, barcode_public_id = self._generate_barcode_image(barcode_number, product_id)
+            if not barcode_image:
+                barcode_image = 'https://placehold.co/300x100/f2f2f2/999999?text=Barcode+Error'
             self.cursor.execute(
                 'UPDATE qt_products SET barcode_public_id = %s WHERE id = %s',
                 (barcode_public_id, product_id)
@@ -387,6 +402,9 @@ class Database:
 
         barcode_number = self._generate_unique_barcode()
         barcode_image, barcode_public_id = self._generate_barcode_image(barcode_number, product_id)
+        
+        if not barcode_image:
+            barcode_image = 'https://placehold.co/300x100/f2f2f2/999999?text=Barcode+Error'
 
         self.cursor.execute('''
             UPDATE qt_products
