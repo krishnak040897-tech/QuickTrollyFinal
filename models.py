@@ -3,6 +3,7 @@ import psycopg2.extras
 import json
 import os
 import random
+import base64
 import traceback
 from werkzeug.security import generate_password_hash, check_password_hash
 from config import Config
@@ -41,7 +42,7 @@ if not PILLOW_AVAILABLE and not SVGWRITER_AVAILABLE:
     except ImportError:
         SVGWRITER_AVAILABLE = False
 
-# --- Cloudinary Initialization ---
+# --- Cloudinary Initialization (optional) ---
 CLOUDINARY_CONFIGURED = False
 if Config.CLOUDINARY_CLOUD_NAME and Config.CLOUDINARY_API_KEY and Config.CLOUDINARY_API_SECRET:
     try:
@@ -53,7 +54,7 @@ if Config.CLOUDINARY_CLOUD_NAME and Config.CLOUDINARY_API_KEY and Config.CLOUDIN
         )
         CLOUDINARY_CONFIGURED = True
     except Exception as e:
-        print(f"⚠️  Cloudinary config failed: {e}")
+        print(f"⚠️  Cloudinary config failed (barcodes will use data URI fallback): {e}")
 
 
 class Database:
@@ -74,7 +75,6 @@ class Database:
                 print("✅ SVG fallback writer available.")
 
     def _create_tables(self):
-        # QuickTrolly-specific tables to avoid conflicts with other applications
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS qt_users (
                 id SERIAL PRIMARY KEY,
@@ -122,20 +122,21 @@ class Database:
         try:
             self.cursor.execute("ALTER TABLE qt_products ADD COLUMN IF NOT EXISTS original_price REAL DEFAULT 0.0")
             self.cursor.execute("ALTER TABLE qt_products ADD COLUMN IF NOT EXISTS barcode_public_id TEXT DEFAULT NULL")
+            self.cursor.execute("ALTER TABLE qt_products ADD COLUMN IF NOT EXISTS barcode_image TEXT DEFAULT NULL")
         except psycopg2.Error:
             pass
 
-    def _upload_barcode_to_cloudinary(self, barcode_number, product_id):
+    def _generate_barcode_image(self, barcode_number, product_id):
+        """
+        Generate a barcode image. Returns (image_url, public_id).
+        If Cloudinary is configured, uploads there and returns the CDN URL.
+        Otherwise, returns a base64 data URI so the barcode always renders.
+        """
         if not BARCODE_LIB_AVAILABLE:
             print("❌ Barcode library not available. Install: pip install python-barcode Pillow")
             return None, None
 
-        if not CLOUDINARY_CONFIGURED:
-            print("⚠️  Cloudinary not configured. Barcode image will be skipped.")
-            return None, None
-
         local_filepath = None
-        extension = '.png'
 
         try:
             if PILLOW_AVAILABLE:
@@ -149,32 +150,51 @@ class Database:
                     'write_text': True,
                 }
                 local_filepath = code128.save(f"temp_barcode_{product_id}", options=options)
-                extension = '.png'
+                mimetype = 'image/png'
             elif SVGWRITER_AVAILABLE:
                 code128 = Code128(barcode_number, writer=SVGWriter())
                 local_filepath = code128.save(f"temp_barcode_{product_id}")
-                extension = '.svg'
-
-            if not local_filepath:
+                mimetype = 'image/svg+xml'
+            else:
+                print("❌ No barcode writer available (need Pillow or SVGWriter)")
                 return None, None
 
-            # Upload to Cloudinary
-            public_id = f"quicktrolly/products/barcode_{product_id}_{barcode_number}"
-            upload_result = cloudinary.uploader.upload(
-                local_filepath,
-                public_id=public_id,
-                overwrite=True,
-                resource_type="image"
-            )
-            secure_url = upload_result.get('secure_url')
-            return secure_url, public_id
+            if not local_filepath or not os.path.exists(local_filepath):
+                print("❌ Barcode file was not created")
+                return None, None
+
+            # Read the generated file
+            with open(local_filepath, 'rb') as f:
+                file_data = f.read()
+
+            # --- Attempt Cloudinary upload (optional) ---
+            if CLOUDINARY_CONFIGURED:
+                try:
+                    public_id = f"quicktrolly/products/barcode_{product_id}_{barcode_number}"
+                    upload_result = cloudinary.uploader.upload(
+                        local_filepath,
+                        public_id=public_id,
+                        overwrite=True,
+                        resource_type="image"
+                    )
+                    secure_url = upload_result.get('secure_url')
+                    if secure_url:
+                        print(f"✅ Barcode uploaded to Cloudinary: {secure_url}")
+                        return secure_url, public_id
+                except Exception as e:
+                    print(f"⚠️  Cloudinary upload failed, using data URI fallback: {e}")
+
+            # --- Fallback: base64 data URI (always works, no external dependency) ---
+            b64_data = base64.b64encode(file_data).decode('utf-8')
+            data_uri = f"data:{mimetype};base64,{b64_data}"
+            print(f"✅ Barcode generated as data URI (length: {len(data_uri)} chars)")
+            return data_uri, None
 
         except Exception as e:
-            print(f"❌ Cloudinary barcode upload error: {e}")
+            print(f"❌ Barcode generation error: {e}")
             traceback.print_exc()
             return None, None
         finally:
-            # Clean up local file
             if local_filepath and os.path.exists(local_filepath):
                 try:
                     os.remove(local_filepath)
@@ -309,8 +329,8 @@ class Database:
 
         product_id = self.cursor.fetchone()['id']
 
-        # Generate and upload barcode
-        barcode_image, barcode_public_id = self._upload_barcode_to_cloudinary(barcode_number, product_id)
+        # Generate barcode image (Cloudinary URL or data URI fallback)
+        barcode_image, barcode_public_id = self._generate_barcode_image(barcode_number, product_id)
 
         self.cursor.execute(
             'UPDATE qt_products SET barcode_image = %s, barcode_public_id = %s WHERE id = %s',
@@ -328,7 +348,7 @@ class Database:
 
         if not barcode_number:
             barcode_number = self._generate_unique_barcode()
-            barcode_image, barcode_public_id = self._upload_barcode_to_cloudinary(barcode_number, product_id)
+            barcode_image, barcode_public_id = self._generate_barcode_image(barcode_number, product_id)
             self.cursor.execute(
                 'UPDATE qt_products SET barcode_public_id = %s WHERE id = %s',
                 (barcode_public_id, product_id)
@@ -345,7 +365,6 @@ class Database:
     def delete_product(self, product_id):
         product = self.get_product_by_id(product_id)
         if product:
-            # Delete barcode from Cloudinary
             if product.get('barcode_public_id') and CLOUDINARY_CONFIGURED:
                 try:
                     cloudinary.uploader.destroy(product['barcode_public_id'])
@@ -360,7 +379,6 @@ class Database:
         if not product:
             return None
 
-        # Delete old barcode from Cloudinary
         if product.get('barcode_public_id') and CLOUDINARY_CONFIGURED:
             try:
                 cloudinary.uploader.destroy(product['barcode_public_id'])
@@ -368,7 +386,7 @@ class Database:
                 print(f"Error deleting old Cloudinary barcode: {e}")
 
         barcode_number = self._generate_unique_barcode()
-        barcode_image, barcode_public_id = self._upload_barcode_to_cloudinary(barcode_number, product_id)
+        barcode_image, barcode_public_id = self._generate_barcode_image(barcode_number, product_id)
 
         self.cursor.execute('''
             UPDATE qt_products
@@ -463,5 +481,4 @@ class Database:
                 return barcode_num
 
 
-# Initialize database singleton
 db = Database()
