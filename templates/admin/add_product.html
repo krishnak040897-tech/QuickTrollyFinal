@@ -243,8 +243,12 @@ function updateBarcodeDisplay(barcodeNumber, barcodeImage) {
     const numberDisplay = document.getElementById('barcode-number-display');
 
     if (barcodeImage) {
-        const cacheBust = '?v=' + Date.now();
-        previewBox.innerHTML = '<img src="' + barcodeImage + cacheBust + '" style="width:100%; height:100%; object-fit:contain; padding:10px;" alt="Barcode" onerror="console.error(\'Failed to load barcode:\', this.src)">';
+        // Data URIs don't support query params — only add cache-buster for HTTP URLs
+        var imgUrl = barcodeImage.startsWith('data:')
+            ? barcodeImage
+            : barcodeImage + '?v=' + Date.now();
+
+        previewBox.innerHTML = '<img src="' + imgUrl + '" style="width:100%; height:100%; object-fit:contain; padding:10px;" alt="Barcode" onerror="console.error(\'Failed to load barcode:\', this.src)">';
         numberDisplay.innerText = 'Barcode SKU: ' + barcodeNumber;
         document.getElementById('download-barcode-btn').disabled = false;
         document.getElementById('print-barcode-btn').disabled = false;
