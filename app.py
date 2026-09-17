@@ -3,14 +3,24 @@ from config import Config
 from models import db
 import functools
 import os
-import razorpay
 import io
 
 app = Flask(__name__)
 app.config.from_object(Config)
 
-# Initialize Razorpay
-razorpay_client = razorpay.Client(auth=(Config.RAZORPAY_KEY_ID, Config.RAZORPAY_KEY_SECRET))
+# Initialize Razorpay (graceful — won't crash app if keys missing)
+razorpay_client = None
+try:
+    import razorpay
+    if Config.RAZORPAY_KEY_ID and Config.RAZORPAY_KEY_SECRET:
+        razorpay_client = razorpay.Client(
+            auth=(Config.RAZORPAY_KEY_ID, Config.RAZORPAY_KEY_SECRET)
+        )
+    else:
+        print("⚠️  Razorpay keys missing — payment features will be disabled.")
+except Exception as e:
+    print(f"⚠️  Failed to initialize Razorpay client: {e}")
+
 
 # --- Decorators ---
 def login_required(f):
@@ -22,6 +32,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrap
 
+
 def admin_required(f):
     @functools.wraps(f)
     def wrap(*args, **kwargs):
@@ -31,10 +42,12 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrap
 
+
 # --- Main Routes ---
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
@@ -48,6 +61,7 @@ def signup():
         else:
             flash('Email already exists.', 'danger')
     return render_template('signup.html')
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -67,20 +81,24 @@ def login():
             flash('Invalid credentials.', 'danger')
     return render_template('login.html')
 
+
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('index'))
+
 
 @app.route('/scanner')
 @login_required
 def scanner():
     return render_template('scanner.html')
 
+
 @app.route('/menu')
 @login_required
 def menu():
     return render_template('menu.html')
+
 
 # --- API Routes ---
 @app.route('/api/product/<qr_code>')
@@ -90,6 +108,7 @@ def get_product_api(qr_code):
     if product:
         return jsonify({"success": True, "product": product})
     return jsonify({"success": False, "message": "Product not found"})
+
 
 @app.route('/api/scan/<barcode>')
 @login_required
@@ -106,6 +125,7 @@ def scan_barcode_api(barcode):
         "message": "Product not found. Please check the barcode."
     })
 
+
 # --- Cart API Routes ---
 @app.route('/api/cart', methods=['GET'])
 @login_required
@@ -113,6 +133,7 @@ def get_cart():
     user_id = session.get('user_id')
     cart = db.get_user_cart(user_id)
     return jsonify({"success": True, "cart": cart})
+
 
 @app.route('/api/cart/add', methods=['POST'])
 @login_required
@@ -125,6 +146,7 @@ def add_to_cart():
         return jsonify({"success": True, "message": "Item added"})
     return jsonify({"success": False, "message": "Invalid product data reference"})
 
+
 @app.route('/api/cart/remove', methods=['POST'])
 @login_required
 def remove_from_cart():
@@ -136,6 +158,7 @@ def remove_from_cart():
         return jsonify({"success": True, "message": "Item removed"})
     return jsonify({"success": False, "message": "Invalid product reference mapping"})
 
+
 @app.route('/api/cart/clear', methods=['POST'])
 @login_required
 def clear_cart():
@@ -143,10 +166,12 @@ def clear_cart():
     db.clear_cart(user_id)
     return jsonify({"success": True})
 
+
 @app.route('/cart')
 @login_required
 def cart():
     return render_template('cart.html')
+
 
 # --- Checkout & Payment Route ---
 @app.route('/checkout', methods=['GET', 'POST'])
@@ -183,6 +208,7 @@ def checkout():
 
     return render_template('checkout.html', key_id=Config.RAZORPAY_KEY_ID)
 
+
 @app.route('/success')
 @login_required
 def success():
@@ -192,12 +218,14 @@ def success():
         order = db.get_order_by_id(order_id)
     return render_template('success.html', order=order)
 
+
 # --- Product Routes ---
 @app.route('/products')
 @login_required
 def view_products():
     products = db.get_all_products()
     return render_template('view_products.html', products=products)
+
 
 @app.route('/product/<product_id>')
 @login_required
@@ -207,6 +235,7 @@ def product_details(product_id):
         flash('Product not found.', 'danger')
         return redirect(url_for('view_products'))
     return render_template('product_details.html', product=product)
+
 
 # --- Admin Routes ---
 @app.route('/admin/dashboard')
@@ -221,17 +250,20 @@ def admin_dashboard():
                            total_users=total_users,
                            recent_products=recent_products)
 
+
 @app.route('/admin/products')
 @admin_required
 def admin_products():
     products = db.get_all_products()
     return render_template('admin/products.html', products=products)
 
+
 @app.route('/admin/transactions')
 @admin_required
 def admin_transactions():
     orders = db.get_all_orders()
     return render_template('admin/transactions.html', orders=orders)
+
 
 @app.route('/admin/add_product', methods=['GET', 'POST'])
 @admin_required
@@ -254,7 +286,10 @@ def admin_add_product():
         if db.get_product_by_qr(qr_code):
             return jsonify({"success": False, "message": "A product with this QR Code already exists."})
 
-        product_id = db.add_product(name, original_price, price, qr_code, image or 'https://placehold.co/400x300/f5f5f5/999999?text=No+Image')
+        product_id = db.add_product(
+            name, original_price, price, qr_code,
+            image or 'https://placehold.co/400x300/f5f5f5/999999?text=No+Image'
+        )
 
         product = db.get_product_by_id(product_id)
         return jsonify({
@@ -265,6 +300,7 @@ def admin_add_product():
             "barcode_image": product.get('barcode_image') if product else None
         })
     return render_template('admin/add_product.html')
+
 
 @app.route('/admin/edit_product/<product_id>', methods=['GET', 'POST'])
 @admin_required
@@ -293,10 +329,12 @@ def admin_edit_product(product_id):
         if existing and str(existing['id']) != product_id:
             return jsonify({"success": False, "message": "A product with this QR Code already exists."})
 
-        db.update_product(product_id, name, original_price, price, qr_code, image or 'https://placehold.co/400x300/f5f5f5/999999?text=No+Image')
+        db.update_product(product_id, name, original_price, price, qr_code,
+                          image or 'https://placehold.co/400x300/f5f5f5/999999?text=No+Image')
         return jsonify({"success": True, "message": "Product updated successfully."})
 
     return render_template('admin/edit_product.html', product=product)
+
 
 @app.route('/admin/regenerate_barcode/<product_id>', methods=['POST'])
 @admin_required
@@ -305,6 +343,7 @@ def regenerate_barcode(product_id):
     if result:
         return jsonify({"success": True, "barcode": result})
     return jsonify({"success": False, "message": "Product not found or barcode generation failed."})
+
 
 @app.route('/admin/download_barcode/<product_id>')
 @admin_required
@@ -322,11 +361,13 @@ def download_barcode(product_id):
                 else:
                     mimetype = 'image/png'
                 download_name = f"barcode_{product.get('barcode_number', 'unknown')}.{ext}"
-                return send_file(img_bytes, as_attachment=True, download_name=download_name, mimetype=mimetype)
+                return send_file(img_bytes, as_attachment=True,
+                                 download_name=download_name, mimetype=mimetype)
         except Exception as e:
             print(f"Error downloading barcode: {e}")
     flash('Barcode not found.', 'danger')
     return redirect(url_for('admin_products'))
+
 
 @app.route('/admin/delete_product/<product_id>', methods=['POST'])
 @admin_required
@@ -335,6 +376,7 @@ def admin_delete_product(product_id):
     if deleted:
         return jsonify({"success": True, "message": "Product deleted successfully."})
     return jsonify({"success": False, "message": "Product not found."})
+
 
 @app.route('/admin/update_order_status/<order_id>', methods=['POST'])
 @admin_required
@@ -345,6 +387,7 @@ def update_order_status(order_id):
         db.update_order_status(order_id, new_status)
         return jsonify({"success": True, "message": "Status updated"})
     return jsonify({"success": False, "message": "Invalid status"})
+
 
 @app.route('/admin/api/products')
 @admin_required
