@@ -4,6 +4,7 @@ from models import db
 import functools
 import os
 import io
+import base64
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -350,21 +351,41 @@ def regenerate_barcode(product_id):
 def download_barcode(product_id):
     product = db.get_product_by_id(product_id)
     if product and product.get('barcode_image'):
-        import requests
-        try:
-            response = requests.get(product['barcode_image'])
-            if response.status_code == 200:
-                img_bytes = io.BytesIO(response.content)
-                ext = os.path.splitext(product['barcode_image'])[1].lower().lstrip('.')
-                if ext == 'svg':
-                    mimetype = 'image/svg+xml'
-                else:
-                    mimetype = 'image/png'
+        barcode_image = product['barcode_image']
+
+        # --- Handle data URI (base64) ---
+        if barcode_image.startswith('data:'):
+            try:
+                header, encoded = barcode_image.split(',', 1)
+                mimetype = header.split(':')[1].split(';')[0]
+                ext = 'svg' if 'svg' in mimetype else 'png'
+                img_bytes = io.BytesIO(base64.b64decode(encoded))
                 download_name = f"barcode_{product.get('barcode_number', 'unknown')}.{ext}"
                 return send_file(img_bytes, as_attachment=True,
                                  download_name=download_name, mimetype=mimetype)
-        except Exception as e:
-            print(f"Error downloading barcode: {e}")
+            except Exception as e:
+                print(f"Error processing data URI barcode: {e}")
+                flash('Error processing barcode image.', 'danger')
+                return redirect(url_for('admin_products'))
+
+        # --- Handle HTTP URL (Cloudinary) ---
+        else:
+            import requests
+            try:
+                response = requests.get(barcode_image)
+                if response.status_code == 200:
+                    img_bytes = io.BytesIO(response.content)
+                    ext = os.path.splitext(barcode_image)[1].lower().lstrip('.')
+                    if ext == 'svg':
+                        mimetype = 'image/svg+xml'
+                    else:
+                        mimetype = 'image/png'
+                    download_name = f"barcode_{product.get('barcode_number', 'unknown')}.{ext}"
+                    return send_file(img_bytes, as_attachment=True,
+                                     download_name=download_name, mimetype=mimetype)
+            except Exception as e:
+                print(f"Error downloading barcode: {e}")
+
     flash('Barcode not found.', 'danger')
     return redirect(url_for('admin_products'))
 
