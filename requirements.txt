@@ -10,3 +10,4 @@ python-barcode==0.14.0
 Pillow==10.4.0
 razorpay==1.4.2
 requests==2.31.0
+setuptools==75.8.0
