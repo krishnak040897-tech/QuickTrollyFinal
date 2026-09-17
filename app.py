@@ -4,6 +4,7 @@ from models import db
 import functools
 import os
 import razorpay
+import io
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -255,7 +256,6 @@ def admin_add_product():
 
         product_id = db.add_product(name, original_price, price, qr_code, image or 'https://placehold.co/400x300/f5f5f5/999999?text=No+Image')
 
-        # Return barcode info so frontend can show it immediately
         product = db.get_product_by_id(product_id)
         return jsonify({
             "success": True,
@@ -311,17 +311,20 @@ def regenerate_barcode(product_id):
 def download_barcode(product_id):
     product = db.get_product_by_id(product_id)
     if product and product.get('barcode_image'):
-        rel_path = product['barcode_image'].lstrip('/')
-        base_dir = os.path.abspath(os.path.dirname(__file__))
-        filepath = os.path.join(base_dir, rel_path)
-        if os.path.exists(filepath):
-            ext = os.path.splitext(filepath)[1].lower().lstrip('.')
-            if ext == 'svg':
-                mimetype = 'image/svg+xml'
-            else:
-                mimetype = 'image/png'
-            download_name = f"barcode_{product.get('barcode_number', 'unknown')}.{ext}"
-            return send_file(filepath, as_attachment=True, download_name=download_name, mimetype=mimetype)
+        import requests
+        try:
+            response = requests.get(product['barcode_image'])
+            if response.status_code == 200:
+                img_bytes = io.BytesIO(response.content)
+                ext = os.path.splitext(product['barcode_image'])[1].lower().lstrip('.')
+                if ext == 'svg':
+                    mimetype = 'image/svg+xml'
+                else:
+                    mimetype = 'image/png'
+                download_name = f"barcode_{product.get('barcode_number', 'unknown')}.{ext}"
+                return send_file(img_bytes, as_attachment=True, download_name=download_name, mimetype=mimetype)
+        except Exception as e:
+            print(f"Error downloading barcode: {e}")
     flash('Barcode not found.', 'danger')
     return redirect(url_for('admin_products'))
 
@@ -355,4 +358,4 @@ def admin_api_products():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=os.environ.get('DEBUG', 'False') == 'True', host='0.0.0.0', port=5000)
