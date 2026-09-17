@@ -28,21 +28,14 @@ try:
     PILLOW_AVAILABLE = True
 except ImportError:
     PILLOW_AVAILABLE = False
-    try:
-        from barcode.writer import SVGWriter
-        SVGWRITER_AVAILABLE = True
-    except ImportError:
-        SVGWRITER_AVAILABLE = False
 
-# Fallback: try SVG writer if Pillow missing
-if not PILLOW_AVAILABLE and not SVGWRITER_AVAILABLE:
-    try:
-        from barcode.writer import SVGWriter
-        SVGWRITER_AVAILABLE = True
-    except ImportError:
-        SVGWRITER_AVAILABLE = False
+try:
+    from barcode.writer import SVGWriter
+    SVGWRITER_AVAILABLE = True
+except ImportError:
+    SVGWRITER_AVAILABLE = False
 
-# --- Cloudinary Initialization (optional) ---
+# --- Cloudinary Initialization ---
 CLOUDINARY_CONFIGURED = False
 if Config.CLOUDINARY_CLOUD_NAME and Config.CLOUDINARY_API_KEY and Config.CLOUDINARY_API_SECRET:
     try:
@@ -55,7 +48,7 @@ if Config.CLOUDINARY_CLOUD_NAME and Config.CLOUDINARY_API_KEY and Config.CLOUDIN
         CLOUDINARY_CONFIGURED = True
         print("✅ Cloudinary successfully configured.")
     except Exception as e:
-        print(f"⚠️  Cloudinary config failed (barcodes will use data URI fallback): {e}")
+        print(f"⚠️  Cloudinary config failed: {e}")
 else:
     print("⚠️  Cloudinary credentials missing. Barcodes will use base64 data URI fallback.")
 
@@ -72,10 +65,6 @@ class Database:
 
         if not BARCODE_LIB_AVAILABLE:
             print("⚠️  python-barcode NOT installed. Run: pip install python-barcode")
-        if not PILLOW_AVAILABLE:
-            print("⚠️  Pillow NOT installed. PNG barcodes unavailable. Run: pip install Pillow")
-            if SVGWRITER_AVAILABLE:
-                print("✅ SVG fallback writer available.")
 
     def _create_tables(self):
         self.cursor.execute('''
@@ -133,34 +122,38 @@ class Database:
         """
         Generate a barcode image. Returns (image_url, public_id).
         If Cloudinary is configured, uploads there and returns the CDN URL.
-        Otherwise, returns a base64 data URI so the barcode always renders.
+        Otherwise, returns a base64 data URI.
         """
         if not BARCODE_LIB_AVAILABLE:
-            print("❌ Barcode library not available. Install: pip install python-barcode Pillow")
+            print("❌ Barcode library not available.")
             return None, None
 
         local_filepath = None
 
         try:
+            # Try generating PNG using Pillow first
             if PILLOW_AVAILABLE:
-                code128 = Code128(barcode_number, writer=ImageWriter())
-                options = {
-                    'module_width': 0.4,
-                    'module_height': 20.0,
-                    'quiet_zone': 6.5,
-                    'font_size': 10,
-                    'text_distance': 5.0,
-                    'write_text': True,
-                }
-                local_filepath = code128.save(f"temp_barcode_{product_id}", options=options)
-                mimetype = 'image/png'
-            elif SVGWRITER_AVAILABLE:
+                try:
+                    code128 = Code128(barcode_number, writer=ImageWriter())
+                    options = {
+                        'module_width': 0.4,
+                        'module_height': 20.0,
+                        'quiet_zone': 6.5,
+                        'font_size': 10,
+                        'text_distance': 5.0,
+                        'write_text': True,
+                    }
+                    local_filepath = code128.save(f"temp_barcode_{product_id}", options=options)
+                    mimetype = 'image/png'
+                except Exception as png_err:
+                    print(f"⚠️ PNG generation failed, falling back to SVG: {png_err}")
+                    local_filepath = None
+
+            # Fallback to SVG if PNG failed or Pillow is missing
+            if not local_filepath and SVGWRITER_AVAILABLE:
                 code128 = Code128(barcode_number, writer=SVGWriter())
                 local_filepath = code128.save(f"temp_barcode_{product_id}")
                 mimetype = 'image/svg+xml'
-            else:
-                print("❌ No barcode writer available (need Pillow or SVGWriter)")
-                return None, None
 
             if not local_filepath or not os.path.exists(local_filepath):
                 print("❌ Barcode file was not created")
@@ -174,7 +167,7 @@ class Database:
                 print("❌ Barcode file is empty")
                 return None, None
 
-            # --- Attempt Cloudinary upload (optional) ---
+            # --- Attempt Cloudinary upload ---
             if CLOUDINARY_CONFIGURED:
                 try:
                     public_id = f"quicktrolly/products/barcode_{product_id}_{barcode_number}"
@@ -193,7 +186,7 @@ class Database:
                 except Exception as e:
                     print(f"⚠️ Cloudinary upload failed, using data URI fallback: {e}")
 
-            # --- Fallback: base64 data URI (always works, no external dependency) ---
+            # --- Fallback: base64 data URI ---
             b64_data = base64.b64encode(file_data).decode('utf-8')
             data_uri = f"data:{mimetype};base64,{b64_data}"
             print(f"✅ Barcode generated as data URI (length: {len(data_uri)} chars)")
